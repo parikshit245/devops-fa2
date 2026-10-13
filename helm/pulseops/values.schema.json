@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "required": ["frontend", "backend", "secrets", "ingress"],
+  "properties": {
+    "frontend": {
+      "type": "object",
+      "required": ["image", "apiBaseUrl"],
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "apiBaseUrl": { "type": "string", "minLength": 1 },
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["existingSecret"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "existingSecret": { "type": "string", "minLength": 1 },
+        "jwtSecret": { "type": "string", "minLength": 1 }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "database": { "type": "string", "minLength": 1 },
+        "username": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "string", "minLength": 1 },
+            "storageClassName": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "required": ["host"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

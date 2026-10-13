@@ -1,0 +1,90 @@
+frontend:
+  replicaCount: 1
+  image:
+    repository: YOUR_DOCKERHUB_USERNAME/pulseops-frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  # This value is embedded during the Next.js image build. It must be browser-reachable.
+  apiBaseUrl: "http://pulseops.example.invalid"
+  service:
+    port: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+backend:
+  replicaCount: 1
+  image:
+    repository: YOUR_DOCKERHUB_USERNAME/pulseops-backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+migrations:
+  enabled: true
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  database: pulseops
+  username: pulseops
+  password: pulseops
+  service:
+    port: 5432
+  storage:
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+secrets:
+  # Set create=false when using an externally-created secret.
+  create: true
+  existingSecret: pulseops-secrets
+  keys:
+    databaseUrl: DATABASE_URL
+    jwtSecret: JWT_SECRET
+  jwtSecret: demo-jwt-secret-12345
+
+config:
+  allowedOrigins: "http://pulseops.example.invalid"
+  cookieSecure: "false"
+  jwtExpireMinutes: "30"
+
+imagePullSecrets: []
+serviceAccount:
+  create: true
+  name: ""
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+ingress:
+  enabled: true
+  className: traefik
+  host: pulseops.example.invalid
+  tls:
+    enabled: false
+    secretName: pulseops-tls
+  annotations: {}
