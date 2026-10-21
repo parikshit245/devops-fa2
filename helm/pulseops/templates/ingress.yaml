@@ -16,8 +16,7 @@ spec:
       secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host }}
-      http:
+    - http:
         paths:
           - path: /api
             pathType: Prefix
@@ -33,4 +32,7 @@ spec:
                 name: {{ include "pulseops.fullname" . }}-frontend
                 port:
                   name: http
+      {{ if .Values.ingress.host }}
+      host: {{ .Values.ingress.host | quote }}
+      {{ end }}
 {{- end }}

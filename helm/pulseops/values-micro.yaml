@@ -35,6 +35,8 @@ monitoring:
       limits:
         cpu: 300m
         memory: 160Mi
+ingress:
+  host: ""
   grafana:
     resources:
       requests:
