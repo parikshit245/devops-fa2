@@ -56,6 +56,7 @@ The chart creates a demo PostgreSQL Deployment, Prometheus, Grafana, persistent 
 ```bash
 helm lint helm/pulseops
 helm upgrade --install pulseops helm/pulseops \
+  -f helm/pulseops/values-micro.yaml \
   --namespace pulseops --create-namespace \
   --set frontend.image.repository=pulseops-frontend \
   --set frontend.image.tag=demo \
@@ -69,6 +70,8 @@ helm upgrade --install pulseops helm/pulseops \
 ```
 
 The migration Job waits for PostgreSQL with `pg_isready` and then runs `alembic upgrade head`. The backend stays at one replica because its monitoring scheduler is process-local.
+
+`values-micro.yaml` lowers the memory requests and limits for a 1 GiB learning instance and shortens Prometheus retention. This is a best-effort profile: under load, containers may restart or remain pending. The standard chart defaults are unchanged.
 
 ## 4. Verify and use it
 
