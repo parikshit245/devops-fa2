@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_user
 from app.db.session import get_db
@@ -55,10 +55,20 @@ async def list_checks(service_id: UUID, hours: int = 24, user: User = Depends(cu
 async def service_analytics(service_id: UUID, days: int = 1, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     service = await owned_service(service_id, user, db)
     to_time = datetime.now(timezone.utc); from_time = to_time - timedelta(days=min(max(days, 1), 30))
+    conditions = (HealthCheck.service_id == service.id, HealthCheck.checked_at >= from_time, HealthCheck.checked_at <= to_time)
+    summary = (await db.execute(select(
+        func.count(HealthCheck.id),
+        func.coalesce(func.sum(case((HealthCheck.success.is_(True), 1), else_=0)), 0),
+        func.avg(HealthCheck.response_ms),
+        func.min(HealthCheck.response_ms),
+        func.max(HealthCheck.response_ms),
+    ).where(*conditions))).one()
     checks = list((await db.scalars(select(HealthCheck).where(HealthCheck.service_id == service.id, HealthCheck.checked_at >= from_time, HealthCheck.checked_at <= to_time).order_by(HealthCheck.checked_at.desc()).limit(1000))).all())
     durations = sorted([check.response_ms for check in checks if check.response_ms is not None])
     percentile = durations[min(len(durations) - 1, round(0.95 * (len(durations) - 1)))] if durations else None
-    return ServiceAnalytics(from_time=from_time, to_time=to_time, total_checks=len(checks), successful_checks=sum(c.success for c in checks), failed_checks=sum(not c.success for c in checks), uptime_percent=round(sum(c.success for c in checks) / len(checks) * 100, 2) if checks else None, average_response_ms=round(sum(durations) / len(durations), 2) if durations else None, min_response_ms=min(durations) if durations else None, max_response_ms=max(durations) if durations else None, p95_response_ms=percentile, checks=checks[:200])
+    total_checks, successful_checks, average_response_ms, min_response_ms, max_response_ms = summary
+    total_checks = total_checks or 0; successful_checks = successful_checks or 0
+    return ServiceAnalytics(from_time=from_time, to_time=to_time, total_checks=total_checks, successful_checks=successful_checks, failed_checks=total_checks - successful_checks, uptime_percent=round(successful_checks / total_checks * 100, 2) if total_checks else None, average_response_ms=round(average_response_ms, 2) if average_response_ms is not None else None, min_response_ms=min_response_ms, max_response_ms=max_response_ms, p95_response_ms=percentile, checks=checks[:200])
 
 @router.get("/deployments", response_model=list[DeploymentRead])
 async def list_deployments(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)): return list((await db.scalars(select(Deployment).where(Deployment.owner_id == user.id).limit(100))).all())

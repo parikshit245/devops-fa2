@@ -40,7 +40,7 @@ For the easiest local setup, the checked-out `backend/.env` uses a local SQLite 
 - `POST /api/v1/services/{service_id}/check` performs a real bounded check.
 - `GET /api/v1/services/{service_id}/checks` returns bounded persisted history.
 - `GET /api/v1/services/{service_id}/analytics` returns check-based uptime and latency summaries.
-- `/metrics` exposes low-cardinality Prometheus application metrics.
+- `/metrics` exposes low-cardinality Prometheus application metrics for API traffic, service checks, and monitored-service status.
 
 Authentication uses a short-lived JWT in an HttpOnly cookie. CORS origins are configured through `ALLOWED_ORIGINS`; credentialed wildcard origins are not enabled.
 
@@ -62,47 +62,48 @@ Backend tests use an isolated SQLite database. Local development can use SQLite 
 - `/services` — authenticated service management backed by the API
 - `/deployments` — deployment history demo view
 - `/incidents` — incident workflow demo view
-- `/analytics` — explicitly labelled demo metrics
+- `/analytics` — check-based availability and latency summaries from the backend
 
-The shared API boundary is [lib/api/client.ts](./lib/api/client.ts). Authentication is connected to the backend; the operational dashboard widgets still contain the Prompt 1 mock flows and should be migrated endpoint-by-endpoint next.
+The shared API boundary is [lib/api/client.ts](./lib/api/client.ts). Dashboard and analytics views use recorded service checks; the analytics history represents sampled health checks, not application request traffic.
 
-## Docker local environment
+## Podman local environment
 
-Prerequisites: Docker Desktop with Compose v2.
+Prerequisites: Podman Desktop with a Podman machine running and a Compose provider installed. On Windows, create a machine once with `podman machine init` if needed, then start it from Podman Desktop or run `podman machine start`. Verify `podman info` and `podman compose version` first. Podman's Compose command needs an external provider such as `podman-compose` available on `PATH`; install/configure one if the command reports that no provider is available.
 
 ```powershell
+podman machine start
 Copy-Item .env.example .env
-docker compose build
-docker compose up -d db
-docker compose ps
-docker compose run --rm backend alembic upgrade head
-docker compose up -d backend frontend
+podman compose build
+podman compose up -d db
+podman compose ps
+podman compose run --rm backend alembic upgrade head
+podman compose up -d backend frontend
 ```
 
-Open `http://localhost:3000`. The browser-facing frontend API URL is `http://localhost:8000`; `backend` is only a Docker-network hostname and is not used by browser JavaScript. The backend listens on port `8000`, the frontend on port `3000`, and PostgreSQL stays private on the Compose network.
+Open `http://localhost:3005`. The browser-facing frontend API URL is `http://localhost:8000`; `backend` is only a Podman-network hostname and is not used by browser JavaScript. The backend listens on port `8000`, the frontend is published on host port `3005` (container port `3000`), and PostgreSQL stays private on the Compose network.
 
 Useful commands:
 
 ```powershell
-docker compose logs -f backend
-docker compose logs -f frontend
-docker compose ps
-docker compose down
-docker compose run --rm backend alembic current
-docker compose build --no-cache
-docker compose down -v # intentionally deletes the local PostgreSQL volume
+podman compose logs -f backend
+podman compose logs -f frontend
+podman compose ps
+podman compose down
+podman compose run --rm backend alembic current
+podman compose build --no-cache
+podman compose down -v # intentionally deletes the local PostgreSQL volume
 ```
 
-The named `pulseops-db-data` volume preserves PostgreSQL data across normal `docker compose down` and container restarts. Use `down -v` only when intentionally resetting local data. Compose uses one backend process because the monitoring scheduler is single-instance; do not scale it horizontally until distributed scheduling is added.
+The named `pulseops-db-data` volume preserves PostgreSQL data across normal `podman compose down` and container restarts. Use `down -v` only when intentionally resetting the local data. Compose uses one backend process because the monitoring scheduler is single-instance; do not scale it horizontally until distributed scheduling is added.
 
 Build versioned images locally with:
 
 ```powershell
-docker build -t pulseops-frontend:0.1.0 .
-docker build -t pulseops-backend:0.1.0 -f backend/Dockerfile .
+podman build -t pulseops-frontend:0.1.0 .
+podman build -t pulseops-backend:0.1.0 -f backend/Dockerfile .
 ```
 
-The frontend `NEXT_PUBLIC_API_BASE_URL` is embedded during the Next.js image build. For a different browser-reachable backend address, set it in `.env` before `docker compose build`. Backend secrets are runtime environment variables and are not copied into either image.
+The frontend `NEXT_PUBLIC_API_BASE_URL` is embedded during the Next.js image build. For a different browser-reachable backend address, set it in `.env` before `podman compose build`. Backend secrets are runtime environment variables and are not copied into either image. The GitHub Actions workflow still uses Docker-compatible Buildx on GitHub-hosted runners; it does not depend on Podman Desktop installed on your computer.
 
 ## Monitoring behavior
 
@@ -114,6 +115,14 @@ The scheduler is intentionally single-instance. Multiple backend replicas would 
 
 ## Kubernetes and EC2 deployment
 
-The reusable chart under [helm/pulseops](./helm/pulseops) supports the simple flow in [KUBERNETES.md](./KUBERNETES.md): one Ubuntu EC2 instance, single-node k3s, local Docker images imported into k3s, PostgreSQL inside Kubernetes, one PVC, and one Helm release. No Docker Hub or managed database is required. The chart creates intentionally demo-only credentials by default; use an external Secret and `postgres.enabled: false` for a real deployment.
+The reusable chart under [helm/pulseops](./helm/pulseops) supports the simple flow in [KUBERNETES.md](./KUBERNETES.md): one Ubuntu EC2 instance, single-node k3s, local Podman images imported into k3s, PostgreSQL, Prometheus, Grafana, persistent volumes, and one Helm release. Prometheus scrapes the backend; Grafana provisions a PulseOps dashboard. The chart creates intentionally demo-only credentials by default; replace them before deployment and use an external Secret and `postgres.enabled: false` for a real deployment.
 
-Keep `backend.replicaCount: 1` because monitoring is process-local. This single-EC2/single-backend architecture is for learning and demonstration, not high availability. Helm and kubectl were not installed in the local Windows workspace, so chart linting, rendering, and real-cluster tests remain to be run on the k3s host.
+Keep `backend.replicaCount: 1` because monitoring is process-local. This single-EC2/single-backend architecture is for learning and demonstration, not high availability. Helm and kubectl were not available in the local Windows workspace, so chart linting, rendering, and real-cluster tests remain to be run on the k3s host.
+
+## GitHub Actions CI/CD
+
+The workflow in `.github/workflows/pulseops.yml` runs frontend lint/build and backend tests on pull requests. Pushes to `main` publish SHA-tagged and `latest` images to GHCR. Kubernetes deployment is opt-in: set repository variable `PULSEOPS_DEPLOY` to `true` and configure the deployment variables and secrets below. The deployment expects an external PostgreSQL database and a TLS Secret already present in the target namespace.
+
+Repository variables: `NEXT_PUBLIC_API_BASE_URL`, `PULSEOPS_DEPLOY`, `K8S_NAMESPACE` (optional; defaults to `pulseops`), `INGRESS_HOST`, `PUBLIC_ORIGIN`, and `TLS_SECRET_NAME`.
+
+Repository or production-environment secrets: `KUBE_CONFIG` (kubeconfig content), `DATABASE_URL`, `JWT_SECRET`, `GRAFANA_ADMIN_PASSWORD`, and `GHCR_READ_TOKEN` (a token with `read:packages` for private GHCR images). Create the TLS Secret in the namespace before enabling deployment. Keep all credentials in GitHub secrets, not repository variables.

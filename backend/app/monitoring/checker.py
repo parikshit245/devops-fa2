@@ -4,12 +4,14 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.metrics import monitoring_check_duration_seconds, monitoring_checks_total
 from app.models.health_check import HealthCheck, FailureCategory
 from app.models.service import MonitoredService, ServiceStatus
 from app.models.incident import Incident, IncidentSeverity, IncidentStatus
 from app.monitoring.ssrf import validate_public_url
 
 async def run_check(service: MonitoredService, db: AsyncSession, client: httpx.AsyncClient) -> HealthCheck:
+    check_started = time.perf_counter()
     checked_at = datetime.now(timezone.utc)
     success = False; code = None; response_ms = None; category: str | None = None
     try:
@@ -39,4 +41,7 @@ async def run_check(service: MonitoredService, db: AsyncSession, client: httpx.A
             open_incident = await db.scalar(select(Incident).where(Incident.service_id == service.id, Incident.owner_id == service.owner_id, Incident.status != IncidentStatus.resolved, Incident.description.like("[auto]%")))
             if not open_incident: db.add(Incident(owner_id=service.owner_id, service_id=service.id, title=f"{service.name} is down", description="[auto] Consecutive health checks failed.", severity=IncidentSeverity.major))
     await db.commit(); await db.refresh(check)
+    outcome = "success" if success else "failure"
+    monitoring_checks_total.labels(outcome=outcome).inc()
+    monitoring_check_duration_seconds.observe(time.perf_counter() - check_started)
     return check

@@ -2,6 +2,7 @@ import type { Service } from "@/types";
 
 const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 type ApiService = { id: string; name: string; description?: string | null; endpoint_url: string; environment: "production" | "staging" | "development"; status: Service["status"]; monitoring_enabled: boolean; last_check_at?: string | null; latest_response_ms?: number | null; created_at: string; updated_at: string };
+export type ServiceAnalytics = { from_time: string; to_time: string; total_checks: number; successful_checks: number; failed_checks: number; uptime_percent: number | null; average_response_ms: number | null; min_response_ms: number | null; max_response_ms: number | null; p95_response_ms: number | null; checks: Array<{ id: string; service_id: string; checked_at: string; success: boolean; response_ms: number | null }> };
 function mapService(service: ApiService): Service { return { id: service.id, name: service.name, url: service.endpoint_url.replace(/^https?:\/\//, ""), environment: service.environment[0].toUpperCase() + service.environment.slice(1) as Service["environment"], status: service.status, uptime: 100, responseTime: service.latest_response_ms ?? 0, lastChecked: service.last_check_at ? new Date(service.last_check_at).toLocaleString() : "Not checked", team: "Unassigned" }; }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { ...init, credentials: "include", headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -22,6 +23,7 @@ export const api = {
   },
   services: {
     list: async () => (await request<ApiService[]>("/api/v1/services")).map(mapService),
+    analytics: (id: string, days = 1) => request<ServiceAnalytics>(`/api/v1/services/${id}/analytics?days=${days}`),
     create: async (payload: Pick<Service, "name" | "url">) => mapService(await request<ApiService>("/api/v1/services", { method: "POST", body: JSON.stringify({ name: payload.name, endpoint_url: `https://${payload.url}`, environment: "production" }) })),
     update: async (id: string, payload: Partial<Service>) => mapService(await request<ApiService>(`/api/v1/services/${id}`, { method: "PATCH", body: JSON.stringify(payload) })),
     remove: (id: string) => request<void>(`/api/v1/services/${id}`, { method: "DELETE" }),

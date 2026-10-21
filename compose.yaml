@@ -24,7 +24,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pulseops}:${POSTGRES_PASSWORD:-pulseops-local-only}@db:5432/${POSTGRES_DB:-pulseops}
       JWT_SECRET: ${JWT_SECRET:-local-compose-secret-change-before-production}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-30}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3005}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     depends_on:
       db:
@@ -45,7 +45,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3005}:3000"
     networks: [pulseops-internal]
 
 volumes:

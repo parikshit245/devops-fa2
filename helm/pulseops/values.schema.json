@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/schema#",
   "type": "object",
-  "required": ["frontend", "backend", "secrets", "ingress"],
+  "required": ["frontend", "backend", "secrets", "ingress", "monitoring"],
   "properties": {
     "frontend": {
       "type": "object",
@@ -46,6 +46,31 @@
           "properties": {
             "size": { "type": "string", "minLength": 1 },
             "storageClassName": { "type": "string" }
+          }
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "required": ["enabled", "prometheus", "grafana"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "prometheus": {
+          "type": "object",
+          "required": ["image", "scrapeInterval", "retention", "storageSize"],
+          "properties": {
+            "image": { "type": "string", "minLength": 1 },
+            "scrapeInterval": { "type": "string", "minLength": 1 },
+            "retention": { "type": "string", "minLength": 1 },
+            "storageSize": { "type": "string", "minLength": 1 }
+          }
+        },
+        "grafana": {
+          "type": "object",
+          "required": ["image", "storageSize"],
+          "properties": {
+            "image": { "type": "string", "minLength": 1 },
+            "storageSize": { "type": "string", "minLength": 1 }
           }
         }
       }

@@ -64,7 +64,9 @@ secrets:
   keys:
     databaseUrl: DATABASE_URL
     jwtSecret: JWT_SECRET
+    grafanaAdminPassword: GRAFANA_ADMIN_PASSWORD
   jwtSecret: demo-jwt-secret-12345
+  grafanaAdminPassword: change-this-demo-password
 
 config:
   allowedOrigins: "http://pulseops.example.invalid"
@@ -88,3 +90,30 @@ ingress:
     enabled: false
     secretName: pulseops-tls
   annotations: {}
+
+monitoring:
+  enabled: true
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    scrapeInterval: 15s
+    retention: 15d
+    storageSize: 5Gi
+    storageClassName: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  grafana:
+    image: grafana/grafana:11.4.0
+    storageSize: 1Gi
+    storageClassName: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

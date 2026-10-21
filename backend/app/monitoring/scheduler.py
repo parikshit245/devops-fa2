@@ -2,9 +2,10 @@ import asyncio
 from contextlib import suppress
 from datetime import datetime, timezone
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from app.db.session import SessionLocal
-from app.models.service import MonitoredService
+from app.metrics import monitored_services
+from app.models.service import MonitoredService, ServiceStatus
 from app.monitoring.checker import run_check
 
 class MonitoringScheduler:
@@ -31,6 +32,11 @@ class MonitoringScheduler:
                 try:
                     async with SessionLocal() as db:
                         services = list((await db.scalars(select(MonitoredService).where(MonitoredService.monitoring_enabled))).all())
+                        status_counts = (await db.execute(select(MonitoredService.status, func.count(MonitoredService.id)).group_by(MonitoredService.status))).all()
+                    for status in ServiceStatus:
+                        monitored_services.labels(status=status.value).set(0)
+                    for status, count in status_counts:
+                        monitored_services.labels(status=status.value).set(count)
                     await asyncio.gather(*(self._check_if_due(service.id, client) for service in services), return_exceptions=True)
                 except Exception:
                     pass

@@ -35,6 +35,10 @@ async def database():
 async def test_health_and_registration():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.get("/health")).status_code == 200
+        metrics = await client.get("/metrics")
+        assert metrics.status_code == 200
+        assert 'pulseops_http_requests_total{method="GET",route="/health",status="200"}' in metrics.text
+        assert 'pulseops_http_request_duration_seconds_count{method="GET",route="/health"}' in metrics.text
         response = await client.post("/api/v1/auth/register", json={"name": "Maya", "email": "MAYA@example.com", "password": "correct horse battery"})
         assert response.status_code == 201
         assert response.json()["user"]["email"] == "maya@example.com"
@@ -56,6 +60,10 @@ async def test_service_crud_and_cross_user_isolation():
         service = await client.post("/api/v1/services", json={"name": "API", "endpoint_url": "https://api.example.com", "environment": "production"})
         assert service.status_code == 201
         service_id = service.json()["id"]
+        analytics = await client.get(f"/api/v1/services/{service_id}/analytics?days=30")
+        assert analytics.status_code == 200
+        assert analytics.json()["total_checks"] == 0
+        assert analytics.json()["uptime_percent"] is None
         await client.post("/api/v1/auth/logout")
         await client.post("/api/v1/auth/register", json={"name": "Two", "email": "two@example.com", "password": "correct horse battery"})
         assert (await client.get(f"/api/v1/services/{service_id}")).status_code == 404

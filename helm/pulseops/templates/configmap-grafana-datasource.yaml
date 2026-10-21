@@ -1,0 +1,19 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pulseops.fullname" . }}-grafana-datasource
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ include "pulseops.fullname" . }}-prometheus:9090
+        isDefault: true
+        editable: false
+{{- end }}

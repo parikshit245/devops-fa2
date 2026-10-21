@@ -1,0 +1,134 @@
+name: PulseOps CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: azure/setup-helm@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      - run: helm lint helm/pulseops
+      - run: helm template pulseops helm/pulseops --namespace pulseops > /dev/null
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m pytest backend/tests -q
+        env:
+          PYTHONPATH: backend
+
+  publish-images:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/pulseops-frontend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/pulseops-frontend:latest
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/pulseops-backend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/pulseops-backend:latest
+
+  deploy:
+    needs: publish-images
+    if: github.ref == 'refs/heads/main' && vars.PULSEOPS_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    env:
+      K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'pulseops' }}
+      INGRESS_HOST: ${{ vars.INGRESS_HOST }}
+      PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+      TLS_SECRET_NAME: ${{ vars.TLS_SECRET_NAME }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+      - name: Configure cluster access
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Prepare namespace and registry access
+        run: |
+          kubectl create namespace "$K8S_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry ghcr-pull \
+            --namespace "$K8S_NAMESPACE" \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.repository_owner }}" \
+            --docker-password="$GHCR_READ_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic pulseops-secrets \
+            --namespace "$K8S_NAMESPACE" \
+            --from-literal=DATABASE_URL="$DATABASE_URL" \
+            --from-literal=JWT_SECRET="$JWT_SECRET" \
+            --from-literal=GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install pulseops helm/pulseops \
+            --namespace "$K8S_NAMESPACE" \
+            --set frontend.image.repository="ghcr.io/${{ github.repository_owner }}/pulseops-frontend" \
+            --set frontend.image.tag="${{ github.sha }}" \
+            --set backend.image.repository="ghcr.io/${{ github.repository_owner }}/pulseops-backend" \
+            --set backend.image.tag="${{ github.sha }}" \
+            --set backend.image.pullPolicy=IfNotPresent \
+            --set imagePullSecrets[0].name=ghcr-pull \
+            --set postgres.enabled=false \
+            --set secrets.create=false \
+            --set secrets.existingSecret=pulseops-secrets \
+            --set ingress.host="$INGRESS_HOST" \
+            --set ingress.tls.enabled=true \
+            --set ingress.tls.secretName="$TLS_SECRET_NAME" \
+            --set config.allowedOrigins="$PUBLIC_ORIGIN" \
+            --set config.cookieSecure=true \
+            --wait --timeout 10m

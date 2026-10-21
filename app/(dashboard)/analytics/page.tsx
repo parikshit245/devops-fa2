@@ -1,2 +1,2 @@
-import { AnalyticsPage } from "@/components/dashboard/pages";
-export default function Analytics() { return <AnalyticsPage />; }
+import { LiveAnalyticsPage } from "@/components/dashboard/analytics-live";
+export default function Analytics() { return <LiveAnalyticsPage />; }

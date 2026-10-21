@@ -1,0 +1,20 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pulseops.fullname" . }}-grafana-dashboard-provider
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+data:
+  dashboard-provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: PulseOps
+        orgId: 1
+        folder: PulseOps
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+{{- end }}
