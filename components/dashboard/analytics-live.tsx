@@ -7,6 +7,7 @@ import { Service } from "@/types";
 import { Card, EmptyState, PageTitle } from "./ui";
 
 type AnalyticsRow = { service: Service; analytics: ServiceAnalytics };
+type AnalyticsResult = { days: number; rows: AnalyticsRow[]; error?: string };
 
 function formatPercent(value: number | null) {
   return value === null ? "No data" : `${value.toFixed(2)}%`;
@@ -18,25 +19,24 @@ function formatLatency(value: number | null) {
 
 export function LiveAnalyticsPage() {
   const [days, setDays] = useState(1);
-  const [rows, setRows] = useState<AnalyticsRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [result, setResult] = useState<AnalyticsResult | null>(null);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError("");
     api.services.list()
       .then(async (services) => Promise.all(services.map(async (service) => ({
         service,
         analytics: await api.services.analytics(service.id, days),
       }))))
-      .then((result) => { if (active) setRows(result); })
-      .catch(() => { if (active) setError("Analytics could not be loaded. Check the API connection and try again."); })
-      .finally(() => { if (active) setLoading(false); });
+      .then((rows) => { if (active) setResult({ days, rows }); })
+      .catch(() => { if (active) setResult({ days, rows: [], error: "Analytics could not be loaded. Check the API connection and try again." }); });
     return () => { active = false; };
   }, [days]);
 
+  const currentResult = result?.days === days ? result : null;
+  const rows = currentResult?.rows ?? [];
+  const loading = currentResult === null;
+  const error = currentResult?.error ?? "";
   const totalChecks = rows.reduce((sum, row) => sum + row.analytics.total_checks, 0);
   const successfulChecks = rows.reduce((sum, row) => sum + row.analytics.successful_checks, 0);
   const uptime = totalChecks ? (successfulChecks / totalChecks) * 100 : null;
