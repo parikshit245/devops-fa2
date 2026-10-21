@@ -20,10 +20,10 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
-RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
+RUN addgroup -S -g 10001 nextjs && adduser -S -u 10001 -G nextjs nextjs
 COPY --from=builder --chown=nextjs:nextjs /app/public ./public
 COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
-USER nextjs
+USER 10001:10001
 EXPOSE 3000
 CMD ["node", "server.js"]

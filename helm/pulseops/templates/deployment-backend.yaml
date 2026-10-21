@@ -67,6 +67,8 @@ spec:
                   key: JWT_EXPIRE_MINUTES
           securityContext:
             runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
