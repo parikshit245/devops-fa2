@@ -1,0 +1,247 @@
+0. Before he arrives (5 minutes)
+
+Make sure the EC2 instance is Running in the AWS console (start it about 10 minutes early), then:
+
+bash
+ssh -i ~/.ssh/pulseops-key.pem ubuntu@EC2_IP
+cd ~/devops-fa2
+
+Open a second SSH terminal and start traffic, so the graphs aren’t empty when you show them:
+
+bash
+cd ~/devops-fa2 && DURATION=1800 bash scripts/generate-traffic.sh http://localhost
+
+Leave that terminal running for the whole session.
+
+1. “Start the project”
+
+Kubernetes keeps the app running all the time, so “starting” it means showing the cluster is up, then deploying the app with Helm:
+
+bash
+sudo systemctl status k3s --no-pager | head -5      # k3s service: active (running)
+kubectl get nodes -o wide                            # node is Ready
+TAG=$(git rev-parse HEAD)
+GHCR_OWNER=parikshit245 bash scripts/deploy.sh "$TAG"
+
+Say: “This deploys the app with Helm: a rolling update, then a smoke test that checks the frontend returns 200 and the API returns 401. If the new version doesn’t come up healthy, it rolls back automatically.” It should end with Deployed ... -> healthy. Because nothing has changed, it finishes in about a minute.
+
+2. Kubernetes: show the live pods
+bash
+kubectl get pods -n pulseops -o wide
+kubectl get svc,pvc,ingress -n pulseops
+kubectl get deploy,daemonset -n pulseops
+
+Say: “Six pods: frontend, backend, Postgres, Prometheus, Grafana and node-exporter. Services give them stable addresses, PVCs are the persistent disks, and the ingress routes port 80.”
+
+Then the self-healing demo, which impresses examiners:
+
+bash
+kubectl delete pod -n pulseops -l app.kubernetes.io/component=frontend
+kubectl get pods -n pulseops -w        # watch the new pod appear; Ctrl+C to stop
+
+Say: “I deleted the pod. The Deployment noticed it had 0 of 1 replicas and created a new one automatically.”
+
+If he asks for more detail:
+
+bash
+kubectl describe pod -n pulseops -l app.kubernetes.io/component=backend | tail -20   # events, probes
+kubectl logs -n pulseops deploy/pulseops-pulseops-backend --tail=20                 # app logs
+kubectl logs -n pulseops deploy/pulseops-pulseops-backend -c migrations             # DB migrations output
+
+Don’t run kubectl top: metrics-server is disabled to save RAM, and Prometheus does that job.
+
+3. Helm commands
+bash
+helm list -n pulseops                       # the release, its revision and status
+helm history pulseops -n pulseops           # every deployment, including the auto-rollback
+helm status pulseops -n pulseops            # resources + the help notes
+helm get values pulseops -n pulseops        # settings this release was installed with (hides nothing secret-critical in output? see note)
+
+helm get values prints the generated passwords, so don’t run it on a projector. Instead, show the chart files in VS Code: helm/pulseops/values-micro.yaml and helm/pulseops/templates/.
+
+Say: “Helm packages all our Kubernetes YAML into one chart. Each deploy is a numbered revision. Here you can see a failed revision, followed by ‘Rollback to 6’, which happened automatically. I can also roll back by hand.”
+
+To demo a manual rollback, take the revision number one below the current one from helm history:
+
+bash
+helm rollback pulseops <PREVIOUS_REVISION> -n pulseops --wait
+helm history pulseops -n pulseops     # a new revision: "Rollback to N"
+4. Prometheus and Grafana
+
+First, show the raw metrics the backend exposes:
+
+bash
+BE=$(kubectl -n pulseops get svc pulseops-pulseops-backend -o jsonpath='{.spec.clusterIP}')
+curl -s http://$BE:8000/metrics | grep '^pulseops_http_requests_total' | head
+
+Say: “This is the /metrics endpoint. Prometheus pulls this every 30 seconds.”
+
+Then show that Prometheus is scraping, from the terminal:
+
+bash
+curl -s 'http://localhost:30090/api/v1/query?query=up' | python3 -m json.tool | grep -E '"job"|"1"|"0"'
+
+Then in the browser:
+
+http://EC2_IP:30090/targets: all 4 targets UP.
+http://EC2_IP:30090/alerts: the 22 rules, with MonitoredServiceDown firing for the broken test site.
+http://EC2_IP:30300: log in as admin. The SRE Overview dashboard opens; then click through to Cluster & Node Resources.
+5. PromQL in Grafana
+
+In Grafana: left menu → Explore → data source Prometheus → switch the editor from Builder to Code → paste a query → Run query. Show these in this order:
+
+#	Query	What to say
+1	up	“1 means Prometheus could scrape that target, 0 means it’s down.”
+2	sum by (route) (rate(pulseops_http_requests_total[5m]))	“Requests per second for each API route: the traffic signal.”
+3	sum by (status) (rate(pulseops_http_requests_total[5m]))	“The same traffic split by HTTP status code: 200, 401, 404.”
+4	histogram_quantile(0.95, sum by (le) (rate(pulseops_http_request_duration_seconds_bucket[5m])))	“p95 latency: 95% of requests are faster than this.”
+5	pulseops:sli_availability:ratio_rate5m	“Our availability SLI, a recording rule. The SLO is 0.99.”
+6	1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes	“Memory used on the EC2 machine, from node-exporter.”
+7	sum by (pod) (container_memory_working_set_bytes{namespace="pulseops", container!=""})	“Memory used by each pod, from the kubelet.”
+
+Another good move: on the dashboard, hover any panel → ⋮ → Edit. The real PromQL behind that graph appears at the bottom. Say: “Every panel is just a PromQL query.”
+
+Optional finale (4 minutes): run bash scripts/simulate-incident.sh, then show PulseOpsDatabaseUnhealthy turning red on the alerts page.
+
+If something goes wrong in front of him
+Problem	Fix
+Browser can’t open :30300 or :30090	Your IP changed. Update the security group rules to My IP.
+A pod isn’t Running	kubectl describe pod -n pulseops <name> | tail -15 and read the Events section out loud; that’s a valid demo too.
+Grafana graphs are flat or empty	The traffic terminal stopped; restart it, and set the time range (top right) to Last 15 minutes.
+deploy.sh is slow	Let it run, and show kubectl get pods -n pulseops -w in the other terminal meanwhile.
+
+Do the full mock once now, start to finish, and time it. If any command prints something unexpected, paste it here and I’ll tell you what it means.
+
+Here’s the exact sequence for your mock, in the same order he’ll ask. Run all of it in the EC2 SSH terminal in VS Code unless a step says “browser”.
+0. Before he arrives (5 minutes)
+Make sure the EC2 instance is Running in the AWS console (start it about 10 minutes early), then:
+bash
+
+ssh -i ~/.ssh/pulseops-key.pem ubuntu@EC2_IP
+cd ~/devops-fa2
+
+Open a second SSH terminal and start traffic, so the graphs aren’t empty when you show them:
+bash
+
+cd ~/devops-fa2 && DURATION=1800 bash scripts/generate-traffic.sh http://localhost
+
+Leave that terminal running for the whole session.
+1. “Start the project”
+Kubernetes keeps the app running all the time, so “starting” it means showing the cluster is up, then deploying the app with Helm:
+bash
+
+sudo systemctl status k3s --no-pager | head -5      # k3s service: active (running)
+kubectl get nodes -o wide                            # node is Ready
+TAG=$(git rev-parse HEAD)
+GHCR_OWNER=parikshit245 bash scripts/deploy.sh "$TAG"
+
+Say: “This deploys the app with Helm: a rolling update, then a smoke test that checks the frontend returns 200 and the API returns 401. If the new version doesn’t come up healthy, it rolls back automatically.” It should end with Deployed ... -> healthy. Because nothing has changed, it finishes in about a minute.
+2. Kubernetes: show the live pods
+bash
+
+kubectl get pods -n pulseops -o wide
+kubectl get svc,pvc,ingress -n pulseops
+kubectl get deploy,daemonset -n pulseops
+
+Say: “Six pods: frontend, backend, Postgres, Prometheus, Grafana and node-exporter. Services give them stable addresses, PVCs are the persistent disks, and the ingress routes port 80.”
+Then the self-healing demo, which impresses examiners:
+bash
+
+kubectl delete pod -n pulseops -l app.kubernetes.io/component=frontend
+kubectl get pods -n pulseops -w        # watch the new pod appear; Ctrl+C to stop
+
+Say: “I deleted the pod. The Deployment noticed it had 0 of 1 replicas and created a new one automatically.”
+If he asks for more detail:
+bash
+
+kubectl describe pod -n pulseops -l app.kubernetes.io/component=backend | tail -20   # events, probes
+kubectl logs -n pulseops deploy/pulseops-pulseops-backend --tail=20                 # app logs
+kubectl logs -n pulseops deploy/pulseops-pulseops-backend -c migrations             # DB migrations output
+
+Don’t run kubectl top: metrics-server is disabled to save RAM, and Prometheus does that job.
+3. Helm commands
+bash
+
+helm list -n pulseops                       # the release, its revision and status
+helm history pulseops -n pulseops           # every deployment, including the auto-rollback
+helm status pulseops -n pulseops            # resources + the help notes
+helm get values pulseops -n pulseops        # settings this release was installed with (hides nothing secret-critical in output? see note)
+
+helm get values prints the generated passwords, so don’t run it on a projector. Instead, show the chart files in VS Code: helm/pulseops/values-micro.yaml and helm/pulseops/templates/.
+Say: “Helm packages all our Kubernetes YAML into one chart. Each deploy is a numbered revision. Here you can see a failed revision, followed by ‘Rollback to 6’, which happened automatically. I can also roll back by hand.”
+To demo a manual rollback, take the revision number one below the current one from helm history:
+bash
+
+helm rollback pulseops <PREVIOUS_REVISION> -n pulseops --wait
+helm history pulseops -n pulseops     # a new revision: "Rollback to N"
+Prometheus and Grafana First, show the raw metrics the backend exposes: bash
+BE=$(kubectl -n pulseops get svc pulseops-pulseops-backend -o jsonpath='{.spec.clusterIP}')
+curl -s http://$BE:8000/metrics | grep '^pulseops_http_requests_total' | head
+
+Say: “This is the /metrics endpoint. Prometheus pulls this every 30 seconds.”
+Then show that Prometheus is scraping, from the terminal:
+bash
+
+curl -s 'http://localhost:30090/api/v1/query?query=up' | python3 -m json.tool | grep -E '"job"|"1"|"0"'
+
+i have done till here amd then
+Figuring out what command was run before the cutoff.
+
+Your message cut off after “i have done till here and then”, so I can’t see what that last command printed. If it showed an error or nothing at all, paste the output and I’ll fix it.
+
+If it worked but looked messy, which is likely because that grep output is hard to read on a projector, use this version instead. It prints one clean line per target:
+
+bash
+curl -s 'http://localhost:30090/api/v1/query?query=up' | python3 -c "import json,sys; [print(f\"{r['metric']['job']:22} {'UP' if r['value'][1]=='1' else 'DOWN'}\") for r in json.load(sys.stdin)['data']['result']]"
+
+Expected:
+
+kubernetes-cadvisor    UP
+node-exporter          UP
+prometheus             UP
+pulseops-backend       UP
+
+Say: “Prometheus is scraping four targets: our backend, the EC2 host through node-exporter, every container through the kubelet, and itself. All four are UP.”
+
+Here’s the rest of the mock from that point.
+
+4b. Prometheus in the browser
+http://EC2_IP:30090/targets: four targets, all UP.
+http://EC2_IP:30090/alerts: Say: “These are our 22 rules. MonitoredServiceDown is firing because our traffic script deliberately registered a broken test site.”
+http://EC2_IP:30090/graph: type up and click Execute. This shows PromQL running directly in Prometheus.
+4c. Grafana
+
+Get the password in the terminal. Run it with the screen turned away, or read it off your notepad:
+
+bash
+kubectl -n pulseops get secret pulseops-secrets -o jsonpath='{.data.GRAFANA_ADMIN_PASSWORD}' | base64 -d; echo
+
+Open http://EC2_IP:30300 and log in as admin. The SRE Overview dashboard opens.
+
+Top row, say: “Availability SLI against our 99% SLO, error budget remaining, latency SLI, p95, burn rate, and firing alerts.”
+Golden signals row, say: “Traffic, errors against the 1% line, latency percentiles, saturation.”
+Click Cluster & Node Resources at the top. Say: “EC2 memory, swap, CPU and disk, and memory per pod against its limit.”
+5. PromQL in Grafana
+
+Open Explore (compass icon in the left menu), pick Prometheus, set the editor to Code, paste each query and press Run query (Shift+Enter):
+
+up
+sum by (route) (rate(pulseops_http_requests_total[5m]))
+sum by (status) (rate(pulseops_http_requests_total[5m]))
+histogram_quantile(0.95, sum by (le) (rate(pulseops_http_request_duration_seconds_bucket[5m])))
+pulseops:sli_availability:ratio_rate5m
+1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+
+Then go back to the dashboard, hover any panel → ⋮ → Edit, and point at the query at the bottom. Say: “Every panel is a PromQL query.”
+
+6. Optional finale: incident drill (4 minutes)
+bash
+bash scripts/simulate-incident.sh
+
+About 2 minutes in, refresh :30090/alerts: PulseOpsDatabaseUnhealthy turns red. After 4 minutes the script prints RECOVERED and the alert clears.
+
+After the mock
+
+Stop the traffic terminal with Ctrl+C. If you won’t use the instance again today, stop it in the AWS console.
+
+Tell me how steps 4b to 5 went, especially whether Grafana Explore returned data for queries 2–4. Those need the traffic script to have been running for a few minutes.

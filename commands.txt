@@ -1,0 +1,100 @@
+ssh -i ~/.ssh/pulseops-key.pem ubuntu@EC2_IP
+cd ~/devops-fa2
+
+
+traffic 
+cd ~/devops-fa2 && DURATION=1800 bash scripts/generate-traffic.sh http://localhost
+
+
+sudo systemctl status k3s --no-pager | head -5      # k3s service: active (running)
+kubectl get nodes -o wide                            # node is Ready
+TAG=$(git rev-parse HEAD)
+GHCR_OWNER=parikshit245 bash scripts/deploy.sh "$TAG"
+
+ubuntu@ip-172-31-10-149:~/devops-fa2$ sudo systemctl status k3s --no-pager | head -5      # k3s service: active (running)
+kubectl get nodes -o wide                            # node is Ready
+TAG=$(git rev-parse HEAD)
+GHCR_OWNER=parikshit245 bash scripts/deploy.sh "$TAG"
+● k3s.service - Lightweight Kubernetes
+     Loaded: loaded (/etc/systemd/system/k3s.service; enabled; preset: enabled)
+     Active: active (running) since Thu 2026-10-22 02:21:17 UTC; 7h ago
+ Invocation: 8ec722dc4cbb46128e9f753e3bf3c15a
+       Docs: https://k3s.io
+NAME               STATUS   ROLES           AGE     VERSION        INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION           CONTAINER-RUNTIME
+ip-172-31-10-149   Ready    control-plane   7h34m   v1.36.5+k3s1   172.31.10.149   <none>        Ubuntu 26.04.1 LTS   7.0.0-1014-aws (amd64)   containerd://2.3.4-k3s1.36
+==> helm upgrade --install pulseops (tag 45293ef4a1c9a8138979017903e72d2b7f4184b6)
+Release "pulseops" has been upgraded. Happy Helming!
+NAME: pulseops
+LAST DEPLOYED: Thu Oct 22 09:55:23 2026
+NAMESPACE: pulseops
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+NOTES:
+PulseOps has been installed as release pulseops in namespace pulseops.
+
+Check everything is running:
+  kubectl -n pulseops get pods,svc,pvc,ingress
+
+App (frontend + /api via Traefik Ingress):
+  http://<EC2_PUBLIC_IP>/
+
+Prometheus (NodePort):
+  http://<EC2_PUBLIC_IP>:30090/targets   (allow this port from YOUR IP only in the security group)
+
+Grafana (NodePort), user "admin":
+  http://<EC2_PUBLIC_IP>:30300/
+  Password: kubectl -n pulseops get secret pulseops-secrets -o jsonpath='{.data.GRAFANA_ADMIN_PASSWORD}' | base64 -d
+
+The backend runs 1 replica(s); keep it at 1 (the monitoring scheduler is process-local).
+PostgreSQL data lives in PVC pulseops-pulseops-postgres - don't delete it unless you want to wipe the demo DB.
+==> smoke test
+NAME                                            READY   STATUS    RESTARTS   AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+pulseops-pulseops-backend-74f8d75c44-6kgfn      1/1     Running   0          7h31m   10.42.0.8       ip-172-31-10-149   <none>           <none>
+pulseops-pulseops-frontend-6f9c9746fb-8dsrf     1/1     Running   0          7h31m   10.42.0.9       ip-172-31-10-149   <none>           <none>
+pulseops-pulseops-grafana-5d5df85984-67k5v      1/1     Running   0          7h31m   10.42.0.13      ip-172-31-10-149   <none>           <none>
+pulseops-pulseops-node-exporter-vf7n9           1/1     Running   0          7h31m   172.31.10.149   ip-172-31-10-149   <none>           <none>
+pulseops-pulseops-postgres-785d46569d-6x2zl     1/1     Running   0          7h31m   10.42.0.15      ip-172-31-10-149   <none>           <none>
+pulseops-pulseops-prometheus-65655c5669-dwptk   1/1     Running   0          7h31m   10.42.0.14      ip-172-31-10-149   <none>           <none>
+REVISION        UPDATED                         STATUS          CHART           APP VERSION     DESCRIPTION
+1               Thu Oct 22 02:24:06 2026        superseded      pulseops-0.1.0  1.0.0           Install complete
+2               Thu Oct 22 09:55:23 2026        deployed        pulseops-0.1.0  1.0.0           Upgrade complete
+Deployed 45293ef4a1c9a8138979017903e72d2b7f4184b6. Frontend /login=200, API /api/v1/auth/me=401 (auth required) -> healthy.
+
+
+
+
+
+2. Kubernetes: show the live pods
+bash
+kubectl get pods -n pulseops -o wide
+kubectl get svc,pvc,ingress -n pulseops
+kubectl get deploy,daemonset -n pulseops
+
+
+helm commands :
+helm list -n pulseops                       # the release, its revision and status
+helm history pulseops -n pulseops           # every deployment, including the auto-rollback
+helm status pulseops -n pulseops            # resources + the help notes
+helm get values pulseops -n pulseops        # settings this release was installed with (hides nothing secret-critical in output? see note)
+
+
+raw metrics :
+BE=$(kubectl -n pulseops get svc pulseops-pulseops-backend -o jsonpath='{.spec.clusterIP}')
+curl -s http://$BE:8000/metrics | grep '^pulseops_http_requests_total' | head
+
+Then show that Prometheus is scraping, from the terminal:
+curl -s 'http://localhost:30090/api/v1/query?query=up' | python3 -m json.tool | grep -E '"job"|"1"|"0"'
+
+
+curl -s 'http://localhost:30090/api/v1/query?query=up' | python3 -c "import json,sys; [print(f\"{r['metric']['job']:22} {'UP' if r['value'][1]=='1' else 'DOWN'}\") for r in json.load(sys.stdin)['data']['result']]"
+
+
+up
+
+sum by (route) (rate(pulseops_http_requests_total[5m]))
+
+sum by (status) (rate(pulseops_http_requests_total[5m]))
+
+histogram_quantile(0.95, sum by (le)
+(rate(pulseops_http_request_duration_seconds_bucket[5m])))
