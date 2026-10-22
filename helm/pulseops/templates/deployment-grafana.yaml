@@ -8,12 +8,18 @@ metadata:
     app.kubernetes.io/component: grafana
 spec:
   replicas: 1
+  # Recreate: grafana.db (SQLite) is on a ReadWriteOnce volume.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pulseops.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: grafana
   template:
     metadata:
+      annotations:
+        checksum/datasource: {{ include (print $.Template.BasePath "/configmap-grafana-datasource.yaml") . | sha256sum }}
+        checksum/dashboards: {{ include (print $.Template.BasePath "/configmap-grafana-dashboard.yaml") . | sha256sum }}
       labels:
         {{- include "pulseops.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: grafana
@@ -42,6 +48,19 @@ spec:
                   key: {{ .Values.secrets.keys.grafanaAdminPassword }}
             - name: GF_USERS_ALLOW_SIGN_UP
               value: "false"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /etc/grafana/dashboards/pulseops-sre-overview.json
+            # Low-memory / offline friendly: no phoning home, no plugin downloads.
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES
+              value: "false"
+            - name: GF_PLUGINS_PREINSTALL_DISABLED
+              value: "true"
+            - name: GF_NEWS_NEWS_FEED_ENABLED
+              value: "false"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -56,8 +75,10 @@ spec:
             httpGet:
               path: /api/health
               port: http
-            initialDelaySeconds: 20
+            initialDelaySeconds: 60
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
           resources:
             {{- toYaml .Values.monitoring.grafana.resources | nindent 12 }}
           volumeMounts:
@@ -69,9 +90,8 @@ spec:
             - name: dashboard-provider
               mountPath: /etc/grafana/provisioning/dashboards
               readOnly: true
-            - name: dashboard
-              mountPath: /var/lib/grafana/dashboards/pulseops-overview.json
-              subPath: pulseops-overview.json
+            - name: dashboards
+              mountPath: /etc/grafana/dashboards
               readOnly: true
       volumes:
         - name: data
@@ -83,7 +103,7 @@ spec:
         - name: dashboard-provider
           configMap:
             name: {{ include "pulseops.fullname" . }}-grafana-dashboard-provider
-        - name: dashboard
+        - name: dashboards
           configMap:
             name: {{ include "pulseops.fullname" . }}-grafana-dashboard
 {{- end }}

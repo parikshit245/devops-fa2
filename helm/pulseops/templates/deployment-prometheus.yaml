@@ -8,17 +8,27 @@ metadata:
     app.kubernetes.io/component: prometheus
 spec:
   replicas: 1
+  # Recreate: the TSDB lives on a ReadWriteOnce volume and holds a lock; two pods can't share it.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pulseops.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: prometheus
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-prometheus.yaml") . | sha256sum }}
+        checksum/rules: {{ include (print $.Template.BasePath "/configmap-prometheus-rules.yaml") . | sha256sum }}
       labels:
         {{- include "pulseops.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: prometheus
     spec:
+      {{- if or .Values.monitoring.prometheus.kubernetesSD .Values.monitoring.prometheus.scrapeCadvisor }}
+      serviceAccountName: {{ include "pulseops.fullname" . }}-prometheus
+      {{- else }}
       serviceAccountName: {{ include "pulseops.serviceAccountName" . }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
@@ -33,6 +43,8 @@ spec:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time={{ .Values.monitoring.prometheus.retention }}
+            - --storage.tsdb.retention.size={{ .Values.monitoring.prometheus.retentionSize }}
+            - --web.enable-lifecycle
           ports:
             - name: http
               containerPort: 9090
@@ -50,13 +62,18 @@ spec:
             httpGet:
               path: /-/healthy
               port: http
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 20
+            timeoutSeconds: 5
           resources:
             {{- toYaml .Values.monitoring.prometheus.resources | nindent 12 }}
           volumeMounts:
             - name: config
-              mountPath: /etc/prometheus
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+              readOnly: true
+            - name: rules
+              mountPath: /etc/prometheus/rules
               readOnly: true
             - name: data
               mountPath: /prometheus
@@ -64,6 +81,9 @@ spec:
         - name: config
           configMap:
             name: {{ include "pulseops.fullname" . }}-prometheus-config
+        - name: rules
+          configMap:
+            name: {{ include "pulseops.fullname" . }}-prometheus-rules
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "pulseops.fullname" . }}-prometheus

@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from app.api.routes import auth, health, resources
 from app.core.config import get_settings
-from app.metrics import http_request_duration_seconds, http_requests_total
+from app.metrics import http_request_duration_seconds, http_requests_in_progress, http_requests_total
 from app.monitoring.scheduler import scheduler
 
 settings = get_settings()
@@ -24,11 +24,13 @@ app.include_router(health.router); app.include_router(auth.router); app.include_
 async def collect_http_metrics(request, call_next):
     started = time.perf_counter()
     status_code = 500
+    http_requests_in_progress.inc()
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
+        http_requests_in_progress.dec()
         route = request.scope.get("route")
         route_path = getattr(route, "path", "unmatched")
         if route_path != "/metrics":

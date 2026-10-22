@@ -5,19 +5,25 @@ metadata:
   name: {{ include "pulseops.fullname" . }}
   labels:
     {{- include "pulseops.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
     - hosts:
-        - {{ .Values.ingress.host }}
+        - {{ .Values.ingress.host | quote }}
       secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - http:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host | quote }}
+      {{- end }}
+      http:
         paths:
+          # Browser API calls are same-origin (/api/v1/...), routed straight to FastAPI.
           - path: /api
             pathType: Prefix
             backend:
@@ -32,7 +38,4 @@ spec:
                 name: {{ include "pulseops.fullname" . }}-frontend
                 port:
                   name: http
-      {{ if .Values.ingress.host }}
-      host: {{ .Values.ingress.host | quote }}
-      {{ end }}
 {{- end }}

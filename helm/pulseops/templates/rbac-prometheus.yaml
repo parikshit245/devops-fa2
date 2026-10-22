@@ -1,0 +1,40 @@
+{{- if and .Values.monitoring.enabled (or .Values.monitoring.prometheus.kubernetesSD .Values.monitoring.prometheus.scrapeCadvisor) }}
+# Prometheus needs read-only access to the Kubernetes API for service discovery (pods)
+# and to read kubelet/cAdvisor container metrics through the API-server proxy.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "pulseops.fullname" . }}-prometheus
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pulseops.fullname" . }}-{{ .Release.Namespace }}-prometheus
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pulseops.fullname" . }}-{{ .Release.Namespace }}-prometheus
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pulseops.fullname" . }}-{{ .Release.Namespace }}-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "pulseops.fullname" . }}-prometheus
+    namespace: {{ .Release.Namespace }}
+{{- end }}

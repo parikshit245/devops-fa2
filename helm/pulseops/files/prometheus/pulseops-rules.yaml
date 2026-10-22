@@ -1,0 +1,163 @@
+# PulseOps SLIs, SLOs and alerts.
+#
+# SLO 1 (availability): 99% of API requests over 30 days do not return 5xx.  -> error budget = 1%
+# SLO 2 (latency):      95% of API requests complete in under 500 ms.
+#
+# Burn-rate alerts follow the Google SRE Workbook "multi-window, multi-burn-rate" pattern:
+#   burn rate 14.4 for 1h  => 2% of the 30-day budget gone in one hour  (page)
+#   burn rate 6    for 6h  => 5% of the 30-day budget gone in six hours (ticket)
+
+groups:
+  - name: pulseops-sli-recording
+    interval: 30s
+    rules:
+      - record: pulseops:http_requests:rate5m
+        expr: sum(rate(pulseops_http_requests_total[5m]))
+
+      # Error ratio (5xx / all) over several windows. "or vector(0)" keeps the series at 0 when there are no errors.
+      - record: pulseops:sli_errors:ratio_rate5m
+        expr: (sum(rate(pulseops_http_requests_total{status=~"5.."}[5m])) or vector(0)) / sum(rate(pulseops_http_requests_total[5m]))
+      - record: pulseops:sli_errors:ratio_rate30m
+        expr: (sum(rate(pulseops_http_requests_total{status=~"5.."}[30m])) or vector(0)) / sum(rate(pulseops_http_requests_total[30m]))
+      - record: pulseops:sli_errors:ratio_rate1h
+        expr: (sum(rate(pulseops_http_requests_total{status=~"5.."}[1h])) or vector(0)) / sum(rate(pulseops_http_requests_total[1h]))
+      - record: pulseops:sli_errors:ratio_rate6h
+        expr: (sum(rate(pulseops_http_requests_total{status=~"5.."}[6h])) or vector(0)) / sum(rate(pulseops_http_requests_total[6h]))
+
+      - record: pulseops:sli_availability:ratio_rate5m
+        expr: 1 - pulseops:sli_errors:ratio_rate5m
+
+      # Latency SLI: share of requests faster than 500 ms (uses the histogram bucket le="0.5").
+      - record: pulseops:sli_latency_good:ratio_rate5m
+        expr: sum(rate(pulseops_http_request_duration_seconds_bucket{le="0.5"}[5m])) / sum(rate(pulseops_http_request_duration_seconds_count[5m]))
+
+      - record: pulseops:http_latency_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(pulseops_http_request_duration_seconds_bucket[5m])))
+
+      # How fast the error budget (1%) is being consumed. 1 = exactly on budget.
+      - record: pulseops:error_budget_burn_rate:5m
+        expr: pulseops:sli_errors:ratio_rate5m / 0.01
+      - record: pulseops:error_budget_burn_rate:1h
+        expr: pulseops:sli_errors:ratio_rate1h / 0.01
+
+  - name: pulseops-slo-alerts
+    rules:
+      - alert: PulseOpsErrorBudgetFastBurn
+        expr: pulseops:sli_errors:ratio_rate1h > (14.4 * 0.01) and pulseops:sli_errors:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "PulseOps API is burning its 30-day error budget 14x too fast"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last hour (SLO allows 1%). At this rate the monthly budget is gone in ~2 days."
+          runbook: "Check backend logs (kubectl logs deploy/<release>-pulseops-backend) and database health (/health/database)."
+
+      - alert: PulseOpsErrorBudgetSlowBurn
+        expr: pulseops:sli_errors:ratio_rate6h > (6 * 0.01) and pulseops:sli_errors:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "PulseOps API error budget is burning steadily"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over 6h (SLO allows 1%)."
+
+      - alert: PulseOpsHighLatency
+        expr: pulseops:http_latency_seconds:p95_5m > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "PulseOps API p95 latency above 500 ms"
+          description: "p95 latency is {{ $value | humanizeDuration }} (SLO: 95% of requests < 500 ms)."
+
+  - name: pulseops-availability-alerts
+    rules:
+      - alert: PulseOpsBackendDown
+        expr: up{job="pulseops-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PulseOps backend is not responding to Prometheus scrapes"
+          description: "Target {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: PulseOpsBackendMissing
+        expr: absent(up{job="pulseops-backend"})
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No PulseOps backend target discovered"
+          description: "Prometheus cannot find any backend pod. Is the Deployment scaled to 0 or crash-looping?"
+
+      - alert: PulseOpsDatabaseUnhealthy
+        expr: sum(rate(pulseops_http_requests_total{route="/health/database",status=~"5.."}[2m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PulseOps cannot reach PostgreSQL"
+          description: "/health/database (the readiness probe) is returning 5xx."
+
+      - alert: MonitoredServiceDown
+        expr: pulseops_service_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Monitored service {{ $labels.service_name }} is failing its health checks"
+          description: "PulseOps synthetic checks against {{ $labels.service_name }} have been failing for 2 minutes."
+
+  - name: pulseops-saturation-alerts
+    rules:
+      - alert: NodeMemoryPressure
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EC2 node memory usage above 90%"
+          description: "Only {{ with query \"node_memory_MemAvailable_bytes\" }}{{ . | first | value | humanize1024 }}B{{ end }} of RAM is available."
+
+      - alert: NodeDiskAlmostFull
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EC2 root disk is more than 90% full"
+          description: "Root filesystem has {{ $value | humanizePercentage }} free."
+
+      - alert: ContainerNearMemoryLimit
+        expr: |
+          (
+            max by (namespace, pod, container) (container_memory_working_set_bytes{container!=""})
+            / on (namespace, pod, container)
+            max by (namespace, pod, container) (container_spec_memory_limit_bytes{container!=""} > 0)
+          ) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is close to its memory limit"
+          description: "Working set is {{ $value | humanizePercentage }} of the limit; it may be OOMKilled soon."
+
+      - alert: ContainerOOMKilled
+        expr: increase(container_oom_events_total{container!=""}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} was OOM-killed"
+          description: "Raise its memory limit in values-micro.yaml or add swap/RAM to the EC2 instance."
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scrape target {{ $labels.job }} / {{ $labels.instance }} is down"
+          description: "Prometheus has failed to scrape this target for 5 minutes."

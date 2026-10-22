@@ -16,4 +16,6 @@ data:
         url: http://{{ include "pulseops.fullname" . }}-prometheus:9090
         isDefault: true
         editable: false
+        jsonData:
+          timeInterval: {{ .Values.monitoring.prometheus.scrapeInterval }}
 {{- end }}

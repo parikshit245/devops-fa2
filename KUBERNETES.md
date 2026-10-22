@@ -1,110 +1,120 @@
-# PulseOps simple Kubernetes demo
-
-This guide deploys PulseOps on one Ubuntu AWS EC2 instance running single-node k3s. The frontend, backend, and PostgreSQL all run in Kubernetes. This is intentionally a learning/demo setup, not production architecture.
+# PulseOps on Kubernetes (k3s on one free-tier EC2 instance)
 
 ```text
-Internet -> EC2 port 80 -> k3s Traefik Ingress
-                         -> frontend and backend Services
-                         -> PostgreSQL Service -> one PVC
+GitHub push ──► GitHub Actions: test ─► security scan ─► build images ─► push to GHCR ─► SSH deploy
+                                                                                          │
+Browser ──► EC2 :80 ──► Traefik Ingress ──┬─ /      ─► frontend (Next.js)                 ▼
+                                          └─ /api/* ─► backend (FastAPI) ─► PostgreSQL (PVC)   helm upgrade --atomic
+                                                          ▲ /metrics
+            EC2 :30090 (your IP only) ─► Prometheus ──────┤◄─ node-exporter (EC2 host), kubelet cAdvisor (pods)
+            EC2 :30300 (your IP only) ─► Grafana ◄── PromQL
 ```
 
-## 1. Create the EC2 host
+Everything (app, database, Prometheus, Grafana) runs in **one single-node k3s cluster**. This is a learning/demo setup, not high availability.
 
-Launch Ubuntu 22.04, 24.04, or 26.04 LTS. Configure the security group with:
+## Why the first attempt didn't work
 
-- TCP 22 from your current IP only
-- TCP 80 from the internet
-- Optional TCP 443
-- Do not expose 3000, 5432, 6443, or 8000
+| Symptom you probably saw | Cause | Fix in this version |
+|---|---|---|
+| Pods stuck in `ErrImageNeverPull` | `podman build -t pulseops-backend:demo` really stores **`localhost/pulseops-backend:demo`**. The chart asked k3s for `pulseops-backend:demo`, which Kubernetes expands to `docker.io/library/pulseops-backend:demo`, so no such local image exists. | Images are built by GitHub Actions and pulled from GHCR. For local images, `deploy.sh` uses the `localhost/` prefix. |
+| The EC2 box freezes / SSH hangs while building | `pnpm build` (Next.js) needs well over 1 GiB of RAM. | Never build on EC2. CI builds the images. |
+| Pods `OOMKilled`, `CrashLoopBackOff` at random | No swap on a 1 GiB box. Postgres's default `shared_buffers=128MB` didn't fit its 128 Mi limit. The Grafana "micro" limits were accidentally nested under `ingress:` in `values-micro.yaml`, so they never applied. | `ec2-setup.sh` adds 2 GiB swap. Postgres is tuned (`shared_buffers=32MB`). `values-micro.yaml` is fixed. |
+| `helm --wait` times out and the app returns 500 on register | Migrations ran as a **post-install hook**, which only runs *after* `--wait` succeeds. On a slow box the wait timed out first, so tables were never created. The Postgres liveness probe could also kill the very first `initdb`. | Migrations now run as an **init container** before the API starts. Postgres and the backend have **startup probes**. |
+| Browser calls fail with CORS / cookie problems | The API URL was baked into the frontend image as an absolute URL. | The image is built with an empty API base, so the browser calls `/api/...` on the same host, and Traefik routes it to FastAPI. One image works for any IP. |
 
-SSH into the instance, then install Podman, k3s, and Helm:
+## 1. Create the EC2 instance
+
+- **AMI:** Ubuntu 24.04 LTS (free tier eligible)
+- **Instance type** (cheapest that works, in order of preference):
+  - Accounts created **after 15 July 2025** (credit-based free plan): `t3.small` (2 GiB) is the sweet spot. `c7i-flex.large` (4 GiB) is very comfortable for the demo day. Both are free-tier eligible and consume credits, so **stop the instance when you're not using it**.
+  - Older accounts: `t3.micro` / `t2.micro` (1 GiB). It works with swap, but it's slow; give the first deploy ~10 minutes.
+- **Storage:** 20 GiB gp3 (the free tier includes 30 GiB).
+- **Security group, inbound:**
+
+| Port | Source | Why |
+|---|---|---|
+| 22 | your IP (plus `0.0.0.0/0` **only** if you enable the GitHub Actions deploy; key-only SSH) | SSH |
+| 80 | `0.0.0.0/0` | the app |
+| 30300 | **your IP only** | Grafana |
+| 30090 | **your IP only** | Prometheus |
+
+Never open 6443 (Kubernetes API), 5432, 8000 or 9100.
+
+## 2. Install k3s, Helm and swap (once)
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y podman
-curl -sfL https://get.k3s.io | sh -
-sudo snap install helm --classic
-podman --version
-sudo kubectl get nodes
-sudo systemctl status k3s
-helm version
-sudo chmod 600 /etc/rancher/k3s/k3s.yaml
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ssh -i your-key.pem ubuntu@EC2_PUBLIC_IP
+git clone https://github.com/parikshit245/devops-fa2.git && cd devops-fa2
+bash scripts/ec2-setup.sh          # swap + k3s (metrics-server disabled) + helm; re-runnable
 ```
 
-k3s includes Traefik by default. Confirm it with `sudo kubectl get pods -n kube-system`.
+## 3. Deploy
 
-## 2. Clone and build locally
-
-Build on EC2 with Podman so you can import the images directly into k3s without publishing them to a registry. Replace the public IP:
-
+### Option A (recommended): images built by GitHub Actions
+1. Push to `main`. The workflow publishes `ghcr.io/<owner>/pulseops-frontend:<sha>` and `pulseops-backend:<sha>`.
+2. In GitHub → your profile → **Packages**, set both packages to **Public**. (Or keep them private and pass a `read:packages` token as `GHCR_TOKEN`.)
+3. On EC2:
 ```bash
-git clone YOUR_REPOSITORY_URL
-cd FA-2-Project
-podman build --build-arg NEXT_PUBLIC_API_BASE_URL="http://YOUR_EC2_PUBLIC_IP" -t pulseops-frontend:demo .
+GHCR_OWNER=parikshit245 bash scripts/deploy.sh latest     # or a commit SHA
+```
+
+### Option B: build on your laptop with Podman (no registry)
+```powershell
+podman build --build-arg NEXT_PUBLIC_API_BASE_URL= -t pulseops-frontend:demo .
 podman build -t pulseops-backend:demo -f backend/Dockerfile .
-podman save --format docker-archive pulseops-frontend:demo | sudo k3s ctr images import -
-podman save --format docker-archive pulseops-backend:demo | sudo k3s ctr images import -
+podman save -m -o pulseops-images.tar localhost/pulseops-frontend:demo localhost/pulseops-backend:demo
+scp -i your-key.pem pulseops-images.tar ubuntu@EC2_PUBLIC_IP:~
+```
+```bash
+sudo k3s ctr images import ~/pulseops-images.tar
+sudo k3s ctr images ls | grep pulseops        # must show localhost/pulseops-...:demo
+IMAGE_SOURCE=local bash scripts/deploy.sh demo
 ```
 
-`NEXT_PUBLIC_API_BASE_URL` is embedded into the frontend image during its build. Rebuild that image if the public URL changes.
+`deploy.sh` generates random DB/JWT/Grafana secrets once (`~/.pulseops-secrets.env`, never committed). It then runs `helm upgrade --install --atomic` (a rolling update with automatic rollback), smoke-tests `/login` (expects 200) and `/api/v1/auth/me` (expects 401), and rolls back if they fail.
 
-## 3. Install with Helm
+> Installed the chart earlier with the defaults? `deploy.sh` re-uses the existing release's secrets automatically. To start completely fresh instead: `helm uninstall pulseops -n pulseops && kubectl -n pulseops delete pvc --all`.
 
-The chart creates a demo PostgreSQL Deployment, Prometheus, Grafana, persistent volumes, and application Secrets. Prometheus scrapes the backend `/metrics` endpoint, and Grafana provisions a PulseOps dashboard. Default credentials are for local learning only; change them before deployment.
+## 4. Verify
 
 ```bash
-helm lint helm/pulseops
-helm upgrade --install pulseops helm/pulseops \
-  -f helm/pulseops/values-micro.yaml \
-  --namespace pulseops --create-namespace \
-  --set frontend.image.repository=pulseops-frontend \
-  --set frontend.image.tag=demo \
-  --set frontend.image.pullPolicy=Never \
-  --set backend.image.repository=pulseops-backend \
-  --set backend.image.tag=demo \
-  --set backend.image.pullPolicy=Never \
-  --set config.allowedOrigins=http://YOUR_EC2_PUBLIC_IP \
-  --wait --timeout 10m
+kubectl -n pulseops get pods,svc,pvc,ingress
+curl -i http://EC2_PUBLIC_IP/login
 ```
+- App: `http://EC2_PUBLIC_IP/`. Register, add a service, and watch it get checked.
+- Prometheus: `http://EC2_PUBLIC_IP:30090/targets` (all targets should show **UP**) and `/alerts`.
+- Grafana: `http://EC2_PUBLIC_IP:30300` → user `admin`, password:
+  `kubectl -n pulseops get secret pulseops-secrets -o jsonpath='{.data.GRAFANA_ADMIN_PASSWORD}' | base64 -d`
 
-The migration Job waits for PostgreSQL with `pg_isready` and then runs `alembic upgrade head`. The backend stays at one replica because its monitoring scheduler is process-local.
+If you'd rather not open 30090/30300, use an SSH tunnel: `ssh -L 3000:localhost:30300 -L 9090:localhost:30090 ubuntu@EC2_PUBLIC_IP`.
 
-`values-micro.yaml` lowers the memory requests and limits for a 1 GiB learning instance, shortens Prometheus retention, and leaves the Ingress host blank so the app can be reached directly by EC2's public IP. This is a best-effort profile: under load, containers may restart or remain pending. The standard chart defaults are unchanged.
+## 5. Deployment strategy, upgrade, rollback
 
-## 4. Verify and use it
-
-```bash
-sudo kubectl -n pulseops get pods,svc,pvc,ingress,jobs
-curl -i http://YOUR_EC2_PUBLIC_IP/
-```
-
-Open `http://YOUR_EC2_PUBLIC_IP` in a browser, register an account, create a service, and view its monitoring status.
-
-## 5. Open the metrics tools
-
-Prometheus and Grafana use ClusterIP Services and are not exposed through the public Ingress. Open separate terminal sessions and port-forward them:
+- **Rolling update** (`maxUnavailable: 0`, `maxSurge: 1`): the new pod must pass its readiness probe before the old one is removed, so there's zero downtime.
+- **`--atomic`:** if the new release doesn't become healthy within the timeout, Helm rolls back by itself. This was tested by deploying a non-existent image tag: Helm marked revision 7 failed, rolled back to 6, and the app kept serving the whole time.
+- Postgres, Prometheus and Grafana use **Recreate**, because each holds a ReadWriteOnce volume.
 
 ```bash
-sudo kubectl -n pulseops port-forward svc/pulseops-pulseops-prometheus 9090:9090
-sudo kubectl -n pulseops port-forward svc/pulseops-pulseops-grafana 3000:3000
-```
-
-Visit `http://localhost:9090/targets` to verify the backend scrape, then visit `http://localhost:3000` and sign in as `admin` using the chart's configured Grafana password. Change the demo password in `helm/pulseops/values.yaml` before deploying outside a local exercise.
-
-## 6. Upgrade, rollback, and reset
-
-```bash
-helm upgrade pulseops helm/pulseops -n pulseops --reuse-values --wait
 helm history pulseops -n pulseops
-helm rollback pulseops REVISION -n pulseops --wait
-helm uninstall pulseops -n pulseops
+helm rollback pulseops <REVISION> -n pulseops --wait
 ```
 
-The PVC is retained after uninstall. Delete it only when intentionally resetting the demo database:
+## 6. Troubleshooting
 
 ```bash
-sudo kubectl delete pvc pulseops-pulseops-postgres -n pulseops
+kubectl -n pulseops get pods                         # look for Pending / CrashLoopBackOff / OOMKilled
+kubectl -n pulseops describe pod <pod>               # Events section explains most problems
+kubectl -n pulseops logs deploy/pulseops-pulseops-backend -c migrations   # schema migration output
+kubectl -n pulseops logs deploy/pulseops-pulseops-backend
+free -h; kubectl top 2>/dev/null || echo "(metrics-server disabled - use the Grafana infra dashboard)"
 ```
+- `Pending` with `Insufficient memory`: the instance is too small. Add swap or use t3.small.
+- `ErrImageNeverPull`: the image name in k3s doesn't match. Run `sudo k3s ctr images ls | grep pulseops`.
+- `ImagePullBackOff` from GHCR: the package is private. Make it public or set `GHCR_TOKEN`.
 
-For a real deployment, disable the chart PostgreSQL (`postgres.enabled: false`), provide an external Secret with `DATABASE_URL`, `JWT_SECRET`, and `GRAFANA_ADMIN_PASSWORD`, use a real domain/HTTPS, and use a registry rather than `imagePullPolicy: Never`.
+## 7. Save your credits
+
+```bash
+aws ec2 stop-instances --instance-ids i-xxxx     # or Stop in the console; EBS data (DB, metrics) is kept
+```
+Note that the public IP changes after a stop/start unless you attach an Elastic IP. The app works with any IP; only the `EC2_HOST` GitHub secret needs updating.

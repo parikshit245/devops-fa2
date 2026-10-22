@@ -10,6 +10,7 @@ from app.models.incident import IncidentStatus
 from app.schemas.common import DeploymentCreate, DeploymentRead, HealthCheckRead, IncidentCreate, IncidentRead, IncidentUpdate, ServiceAnalytics, ServiceCreate, ServiceRead, ServiceUpdate
 from app.models.health_check import HealthCheck
 from app.monitoring.checker import run_check
+from app.metrics import forget_service
 import httpx
 from datetime import timedelta, timezone
 
@@ -37,7 +38,7 @@ async def update_service(service_id: UUID, payload: ServiceUpdate, user: User = 
     await db.commit(); await db.refresh(service); return service
 @router.delete("/services/{service_id}", status_code=204)
 async def delete_service(service_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    service = await owned_service(service_id, user, db); await db.delete(service); await db.commit()
+    service = await owned_service(service_id, user, db); forget_service(str(service.id), service.name); await db.delete(service); await db.commit()
 
 @router.post("/services/{service_id}/check", response_model=HealthCheckRead)
 async def manual_check(service_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):

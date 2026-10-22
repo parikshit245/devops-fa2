@@ -1,0 +1,16 @@
+# Prometheus config for the local Podman/Docker Compose stack (Kubernetes uses the Helm chart's ConfigMap).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: local-compose
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+  - job_name: pulseops-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]

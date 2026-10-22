@@ -4,8 +4,9 @@ frontend:
     repository: YOUR_DOCKERHUB_USERNAME/pulseops-frontend
     tag: "1.0.0"
     pullPolicy: IfNotPresent
-  # This value is embedded during the Next.js image build. It must be browser-reachable.
-  apiBaseUrl: "http://pulseops.example.invalid"
+  # Informational only: NEXT_PUBLIC_API_BASE_URL is embedded during the Next.js image build.
+  # Build with an EMPTY value ("") so the browser calls /api/... on the same host (works for any IP/domain).
+  apiBaseUrl: "same-origin"
   service:
     port: 80
   resources:
@@ -44,6 +45,11 @@ postgres:
   database: pulseops
   username: pulseops
   password: pulseops
+  # Postgres' default shared_buffers (128MB) is larger than a micro memory limit -> OOMKilled.
+  # These keep it comfortably inside its container limit.
+  tuning:
+    sharedBuffers: 128MB
+    maxConnections: 100
   service:
     port: 5432
   storage:
@@ -85,6 +91,7 @@ affinity: {}
 ingress:
   enabled: true
   className: traefik
+  # Leave empty to serve on any host / the bare EC2 public IP.
   host: pulseops.example.invalid
   tls:
     enabled: false
@@ -96,9 +103,21 @@ monitoring:
   prometheus:
     image: prom/prometheus:v2.55.1
     scrapeInterval: 15s
+    evaluationInterval: 15s
     retention: 15d
+    # Hard cap on TSDB disk usage (protects the small EBS volume).
+    retentionSize: 2GB
     storageSize: 5Gi
     storageClassName: ""
+    # Discover the backend pod through the Kubernetes API (keeps scraping even when the pod is NotReady,
+    # so "backend down" incidents stay visible). Needs the RBAC objects in rbac-prometheus.yaml.
+    kubernetesSD: true
+    # Scrape per-container CPU/memory from the kubelet's cAdvisor via the API server proxy.
+    scrapeCadvisor: true
+    service:
+      # ClusterIP (use kubectl port-forward / SSH tunnel) or NodePort (open the port to YOUR IP only in the AWS security group).
+      type: ClusterIP
+      nodePort: 30090
     resources:
       requests:
         cpu: 100m
@@ -110,6 +129,9 @@ monitoring:
     image: grafana/grafana:11.4.0
     storageSize: 1Gi
     storageClassName: ""
+    service:
+      type: ClusterIP
+      nodePort: 30300
     resources:
       requests:
         cpu: 100m
@@ -117,3 +139,14 @@ monitoring:
       limits:
         cpu: 500m
         memory: 512Mi
+  nodeExporter:
+    # Host metrics for the EC2 node: CPU, memory, swap, disk, network, load.
+    enabled: true
+    image: prom/node-exporter:v1.8.2
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 100m
+        memory: 48Mi

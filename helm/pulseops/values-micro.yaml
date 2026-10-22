@@ -1,11 +1,15 @@
+# Low-memory profile for a 1 GiB (t2.micro / t3.micro) or 2 GiB (t3.small) EC2 instance running single-node k3s.
+# Requests are what the scheduler reserves; limits are the hard OOM ceiling per container.
+# On 1 GiB you MUST add swap on the host first (see KUBERNETES.md step 1).
+
 frontend:
   resources:
     requests:
-      cpu: 50m
-      memory: 80Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
       cpu: 300m
-      memory: 160Mi
+      memory: 192Mi
 
 backend:
   resources:
@@ -13,35 +17,60 @@ backend:
       cpu: 50m
       memory: 96Mi
     limits:
-      cpu: 300m
-      memory: 192Mi
+      cpu: 400m
+      memory: 256Mi
 
 postgres:
+  tuning:
+    sharedBuffers: 32MB
+    maxConnections: 30
+  storage:
+    size: 2Gi
   resources:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 64Mi
     limits:
       cpu: 250m
-      memory: 128Mi
+      memory: 192Mi
+
+ingress:
+  # Empty host = reachable directly on http://EC2_PUBLIC_IP/
+  host: ""
 
 monitoring:
   prometheus:
+    scrapeInterval: 30s
+    evaluationInterval: 30s
     retention: 3d
+    retentionSize: 500MB
+    storageSize: 2Gi
+    service:
+      type: NodePort
+      nodePort: 30090
     resources:
       requests:
-        cpu: 50m
+        cpu: 25m
         memory: 96Mi
       limits:
         cpu: 300m
-        memory: 160Mi
-ingress:
-  host: ""
+        memory: 224Mi
   grafana:
+    service:
+      type: NodePort
+      nodePort: 30300
     resources:
       requests:
-        cpu: 50m
-        memory: 96Mi
+        cpu: 25m
+        memory: 80Mi
       limits:
         cpu: 300m
-        memory: 160Mi
+        memory: 224Mi
+  nodeExporter:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 12Mi
+      limits:
+        cpu: 100m
+        memory: 40Mi

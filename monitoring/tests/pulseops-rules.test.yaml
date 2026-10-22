@@ -1,0 +1,70 @@
+# Unit tests for the alerting rules:  promtool test rules monitoring/tests/pulseops-rules.test.yaml
+rule_files:
+  - ../../helm/pulseops/files/prometheus/pulseops-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 1) Backend scrape fails -> PulseOpsBackendDown fires after 1 minute.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="pulseops-backend", instance="10.42.0.10:8000"}'
+        values: '1 1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PulseOpsBackendDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: PulseOpsBackendDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: pulseops-backend, instance: "10.42.0.10:8000" }
+            exp_annotations:
+              summary: "PulseOps backend is not responding to Prometheus scrapes"
+              description: "Target 10.42.0.10:8000 has been down for more than 1 minute."
+
+  # 2) 50% of requests are 5xx for over an hour -> fast error-budget burn (critical).
+  - interval: 1m
+    input_series:
+      - series: 'pulseops_http_requests_total{method="GET", route="/api/v1/services", status="200"}'
+        values: '0+60x90'
+      - series: 'pulseops_http_requests_total{method="GET", route="/api/v1/services", status="500"}'
+        values: '0+60x90'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: PulseOpsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: availability }
+            exp_annotations:
+              summary: "PulseOps API is burning its 30-day error budget 14x too fast"
+              description: "5xx ratio is 50% over the last hour (SLO allows 1%). At this rate the monthly budget is gone in ~2 days."
+              runbook: "Check backend logs (kubectl logs deploy/<release>-pulseops-backend) and database health (/health/database)."
+
+  # 3) Healthy traffic -> no burn alert, availability SLI = 100%.
+  - interval: 1m
+    input_series:
+      - series: 'pulseops_http_requests_total{method="GET", route="/health", status="200"}'
+        values: '0+60x90'
+    promql_expr_test:
+      - expr: pulseops:sli_availability:ratio_rate5m
+        eval_time: 30m
+        exp_samples:
+          - labels: 'pulseops:sli_availability:ratio_rate5m'
+            value: 1
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: PulseOpsErrorBudgetFastBurn
+        exp_alerts: []
+
+  # 4) A user's monitored website fails checks -> MonitoredServiceDown (warning).
+  - interval: 30s
+    input_series:
+      - series: 'pulseops_service_up{service_id="abc", service_name="Shop"}'
+        values: '1 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m30s
+        alertname: MonitoredServiceDown
+        exp_alerts:
+          - exp_labels: { severity: warning, service_id: abc, service_name: Shop }
+            exp_annotations:
+              summary: "Monitored service Shop is failing its health checks"
+              description: "PulseOps synthetic checks against Shop have been failing for 2 minutes."

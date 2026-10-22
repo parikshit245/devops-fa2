@@ -115,14 +115,28 @@ The scheduler is intentionally single-instance. Multiple backend replicas would 
 
 ## Kubernetes and EC2 deployment
 
-The reusable chart under [helm/pulseops](./helm/pulseops) supports the simple flow in [KUBERNETES.md](./KUBERNETES.md): one Ubuntu EC2 instance, single-node k3s, local Podman images imported into k3s, PostgreSQL, Prometheus, Grafana, persistent volumes, and one Helm release. Prometheus scrapes the backend; Grafana provisions a PulseOps dashboard. The chart creates intentionally demo-only credentials by default; replace them before deployment and use an external Secret and `postgres.enabled: false` for a real deployment.
+See **[KUBERNETES.md](./KUBERNETES.md)**: one free-tier EC2 instance running single-node k3s, with the Helm chart in [helm/pulseops](./helm/pulseops) (frontend, backend, PostgreSQL, Prometheus, Grafana, node-exporter). The short version:
 
-Keep `backend.replicaCount: 1` because monitoring is process-local. This single-EC2/single-backend architecture is for learning and demonstration, not high availability. Helm and kubectl were not available in the local Windows workspace, so chart linting, rendering, and real-cluster tests remain to be run on the k3s host.
+```bash
+bash scripts/ec2-setup.sh                         # once: swap + k3s + helm
+GHCR_OWNER=<github-user> bash scripts/deploy.sh latest   # helm --atomic rolling update + smoke test
+```
+
+Keep `backend.replicaCount: 1` (enforced by the chart schema), because the monitoring scheduler is process-local.
+
+## Monitoring, observability and SRE
+
+See **[MONITORING.md](./MONITORING.md)**: Prometheus metrics, SLI/SLO recording rules, multi-window burn-rate alerts (unit-tested with `promtool`), two provisioned Grafana dashboards (SRE overview and cluster/node resources), a traffic generator, an incident drill (`scripts/simulate-incident.sh`) and a blameless [post-mortem template](./docs/POSTMORTEM.md). For a local version: `podman compose --profile monitoring up -d`.
 
 ## GitHub Actions CI/CD
 
-The workflow in `.github/workflows/pulseops.yml` runs frontend lint/build and backend tests on pull requests. Pushes to `main` publish SHA-tagged and `latest` images to GHCR. Kubernetes deployment is opt-in: set repository variable `PULSEOPS_DEPLOY` to `true` and configure the deployment variables and secrets below. The deployment expects an external PostgreSQL database and a TLS Secret already present in the target namespace.
+`.github/workflows/pulseops.yml` (Build → Test → Scan → Package → Deploy):
 
-Repository variables: `NEXT_PUBLIC_API_BASE_URL`, `PULSEOPS_DEPLOY`, `K8S_NAMESPACE` (optional; defaults to `pulseops`), `INGRESS_HOST`, `PUBLIC_ORIGIN`, and `TLS_SECRET_NAME`.
+| Job | What it does |
+|---|---|
+| `test` | `pnpm lint` + `pnpm build`, `pytest`, Grafana dashboards up to date, `helm lint`/`template`, **kubeconform** schema validation, **promtool** rule checks + unit tests |
+| `security` (DevSecOps) | **Bandit** SAST (fails on HIGH), **Trivy** secret scan (fails if a credential is committed), dependency scan and IaC misconfiguration scan (reports) |
+| `publish-images` | Builds both images with Buildx (layer cache), pushes `ghcr.io/<owner>/pulseops-*:<sha>` and `:latest`, then Trivy-scans the images |
+| `deploy` (opt-in) | Copies the chart to EC2 over SSH, runs `scripts/deploy.sh <sha>` (`helm --atomic`: rolling update, automatic rollback), then an external smoke test |
 
-Repository or production-environment secrets: `KUBE_CONFIG` (kubeconfig content), `DATABASE_URL`, `JWT_SECRET`, `GRAFANA_ADMIN_PASSWORD`, and `GHCR_READ_TOKEN` (a token with `read:packages` for private GHCR images). Create the TLS Secret in the namespace before enabling deployment. Keep all credentials in GitHub secrets, not repository variables.
+To enable deploy, set repository variable `PULSEOPS_DEPLOY=true` and these secrets (on the `production` environment): `EC2_HOST` (public IP), `EC2_USER` (`ubuntu`), `EC2_SSH_KEY` (the .pem contents), and optionally `GHCR_READ_TOKEN` (only if the GHCR packages are private). The frontend image is built with an empty `NEXT_PUBLIC_API_BASE_URL`, so it calls `/api` on whatever host serves it.

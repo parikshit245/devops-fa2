@@ -18,6 +18,14 @@ spec:
       app.kubernetes.io/component: backend
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
         {{- include "pulseops.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: backend
@@ -31,6 +39,46 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      # Schema migrations run before the API starts, in the same pod.
+      # (Replaces the old post-install Helm hook Job, which only ran AFTER `helm --wait` succeeded:
+      #  on a slow micro instance the wait timed out first, so the tables were never created.)
+      initContainers:
+        {{- if .Values.postgres.enabled }}
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "pulseops.fullname" . }}-postgres -p {{ .Values.postgres.service.port }}; do echo waiting for postgres; sleep 2; done"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 100m, memory: 32Mi }
+        {{- end }}
+        - name: migrations
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.databaseUrl }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
@@ -40,6 +88,8 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            - name: APP_VERSION
+              value: {{ .Values.backend.image.tag | quote }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -72,6 +122,13 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
           readinessProbe:
             httpGet:
               path: /health/database

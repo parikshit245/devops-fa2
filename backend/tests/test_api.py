@@ -75,7 +75,10 @@ async def test_ssrf_rejects_private_destinations():
         await validate_public_url("http://127.0.0.1:8000")
 
 @pytest.mark.asyncio
-async def test_failed_checks_create_once_and_recovery_resolves():
+async def test_failed_checks_create_once_and_recovery_resolves(monkeypatch):
+    # The SSRF guard does a real DNS lookup; stub it so the test is hermetic (no network in CI sandboxes).
+    async def allow_all(_url): return None
+    monkeypatch.setattr("app.monitoring.checker.validate_public_url", allow_all)
     async with TestingSession() as session:
         user = User(name="Monitor", email="monitor@example.com", password_hash="not-used")
         session.add(user); await session.flush()
@@ -90,3 +93,22 @@ async def test_failed_checks_create_once_and_recovery_resolves():
         async with httpx.AsyncClient(transport=transport) as client:
             await run_check(service, session, client)
         assert service.status.value == "operational"
+
+
+@pytest.mark.asyncio
+async def test_per_service_metrics_exported_and_removed(monkeypatch):
+    async def allow_all(_url): return None
+    monkeypatch.setattr("app.monitoring.checker.validate_public_url", allow_all)
+    from prometheus_client import generate_latest
+    from app.metrics import forget_service
+    async with TestingSession() as session:
+        user = User(name="Metrics", email="metrics@example.com", password_hash="not-used")
+        session.add(user); await session.flush()
+        service = MonitoredService(owner_id=user.id, name="Shop", endpoint_url="https://example.com")
+        session.add(service); await session.commit(); await session.refresh(service)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200))) as client:
+            await run_check(service, session, client)
+        text = generate_latest().decode()
+        assert f'pulseops_service_up{{service_id="{service.id}",service_name="Shop"}} 1.0' in text
+        forget_service(str(service.id), "Shop")
+        assert f'service_id="{service.id}"' not in generate_latest().decode()

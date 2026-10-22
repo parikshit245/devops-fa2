@@ -28,6 +28,11 @@ spec:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
           imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          args:
+            - -c
+            - shared_buffers={{ .Values.postgres.tuning.sharedBuffers }}
+            - -c
+            - max_connections={{ .Values.postgres.tuning.maxConnections }}
           ports:
             - name: postgres
               containerPort: 5432
@@ -41,6 +46,14 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+          # First boot runs initdb, which can take minutes on a swapping t3.micro. Without a startupProbe the
+          # livenessProbe killed it half-way, leaving a data dir WITHOUT the "pulseops" database.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]

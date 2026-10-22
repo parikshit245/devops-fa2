@@ -15,6 +15,8 @@ data:
         type: file
         disableDeletion: false
         editable: true
+        updateIntervalSeconds: 60
         options:
-          path: /var/lib/grafana/dashboards
+          # Outside /var/lib/grafana (the PVC) so ConfigMap updates always win.
+          path: /etc/grafana/dashboards
 {{- end }}

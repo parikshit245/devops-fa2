@@ -1,0 +1,102 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.nodeExporter.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "pulseops.fullname" . }}-node-exporter
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-exporter
+spec:
+  selector:
+    matchLabels:
+      {{- include "pulseops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node-exporter
+  template:
+    metadata:
+      labels:
+        {{- include "pulseops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node-exporter
+    spec:
+      serviceAccountName: {{ include "pulseops.serviceAccountName" . }}
+      # Host network so network/interface metrics describe the EC2 instance, not the pod.
+      # Port 9100 is NOT opened in the AWS security group, so it stays private.
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: node-exporter
+          image: {{ .Values.monitoring.nodeExporter.image | quote }}
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --web.listen-address=:9100
+            # Only the collectors the dashboard uses -> fewer series, less Prometheus memory.
+            - --collector.disable-defaults
+            - --collector.cpu
+            - --collector.meminfo
+            - --collector.loadavg
+            - --collector.filesystem
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|snap|boot/efi|var/lib/kubelet|var/lib/rancher)($|/)
+            - --collector.netdev
+            - --collector.netdev.device-exclude=^(lo|veth.*|cni.*|flannel.*)$
+            - --collector.diskstats
+            - --collector.pressure
+            - --collector.uname
+            - --collector.time
+            - --collector.vmstat
+            - --collector.stat
+          ports:
+            - name: metrics
+              containerPort: 9100
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.monitoring.nodeExporter.resources | nindent 12 }}
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pulseops.fullname" . }}-node-exporter
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-exporter
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pulseops.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: node-exporter
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+{{- end }}

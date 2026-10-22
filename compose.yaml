@@ -48,8 +48,46 @@ services:
       - "${FRONTEND_PORT:-3005}:3000"
     networks: [pulseops-internal]
 
+  # ---- Monitoring (optional):  podman compose --profile monitoring up -d ----
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./helm/pulseops/files/prometheus:/etc/prometheus/rules:ro,z
+      - pulseops-prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on: [backend]
+    networks: [pulseops-internal]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-pulseops-local-only}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/pulseops-sre-overview.json
+    volumes:
+      - ./monitoring/compose/grafana/datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml:ro,z
+      - ./monitoring/compose/grafana/dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/dashboard-provider.yaml:ro,z
+      - ./helm/pulseops/files/grafana:/etc/grafana/dashboards:ro,z
+      - pulseops-grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3300}:3000"
+    depends_on: [prometheus]
+    networks: [pulseops-internal]
+
 volumes:
   pulseops-db-data:
+  pulseops-prometheus-data:
+  pulseops-grafana-data:
 
 networks:
   pulseops-internal:

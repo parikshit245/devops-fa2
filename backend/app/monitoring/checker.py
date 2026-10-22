@@ -4,7 +4,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.metrics import monitoring_check_duration_seconds, monitoring_checks_total
+from app.metrics import monitoring_check_duration_seconds, monitoring_checks_total, service_response_seconds, service_up
 from app.models.health_check import HealthCheck, FailureCategory
 from app.models.service import MonitoredService, ServiceStatus
 from app.models.incident import Incident, IncidentSeverity, IncidentStatus
@@ -44,4 +44,7 @@ async def run_check(service: MonitoredService, db: AsyncSession, client: httpx.A
     outcome = "success" if success else "failure"
     monitoring_checks_total.labels(outcome=outcome).inc()
     monitoring_check_duration_seconds.observe(time.perf_counter() - check_started)
+    labels = {"service_id": str(service.id), "service_name": service.name}
+    service_up.labels(**labels).set(1 if success else 0)
+    if success and response_ms is not None: service_response_seconds.labels(**labels).set(response_ms / 1000)
     return check
